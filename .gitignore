@@ -5,4 +5,5 @@ build/
 dist/
 *.spec
 focusaudio_debug.log
+focusaudio_config.json
 FocusAudio.exe

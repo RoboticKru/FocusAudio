@@ -14,9 +14,17 @@ from pycaw.pycaw import AudioUtilities, ISimpleAudioVolume
 from comtypes import CLSCTX_ALL
 from pycaw.pycaw import IAudioMeterInformation
 import logging
+import json
+import urllib.request
+import tempfile
+import subprocess
+
+VERSION = "2.0.0"
+REPO_OWNER = "RoboticKru"
+REPO_NAME = "FocusAudio"
 
 # Debug log file — delete or set to False to disable
-DEBUG_LOG = True
+DEBUG_LOG = False
 if DEBUG_LOG:
     logging.basicConfig(
         filename=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'focusaudio_debug.log'),
@@ -70,8 +78,68 @@ _last_focus_by_app = {} # app_name -> session_key last chosen for focus
 _session_targets = {}   # session_key -> last requested target volume
 _active_fades = set()   # tokens of currently active fade threads
 _silence_timers = {}    # session_key -> timestamp when silence was first detected
+_current_sessions = []  # latest session snapshot for the GUI
 _lock = threading.Lock()
 _refresh_requested = threading.Event()
+
+# ── Per-app config & roles ───────────────────────────────────────────────────
+_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'focusaudio_config.json')
+_app_config = {}     # app_name -> {"role": "auto", "vol": 1.0}
+_global_config = {}  # "ducking_level": 0.20
+
+
+def load_config():
+    global _app_config, _global_config
+    try:
+        if os.path.exists(_CONFIG_FILE):
+            with open(_CONFIG_FILE, 'r') as f:
+                data = json.load(f)
+                _app_config = data.get("apps", {})
+                _global_config = data.get("global", {})
+    except Exception:
+        _app_config = {}
+        _global_config = {}
+
+
+def save_config():
+    try:
+        with open(_CONFIG_FILE, 'w') as f:
+            json.dump({"apps": _app_config, "global": _global_config}, f, indent=2)
+    except Exception:
+        pass
+
+
+def get_global_ducking():
+    return _global_config.get("ducking_level", 0.20)
+
+
+def set_global_ducking(level):
+    _global_config["ducking_level"] = max(0.0, min(1.0, float(level)))
+    save_config()
+
+
+def get_app_config(app_name):
+    """Get per-app config, creating defaults if needed."""
+    if app_name not in _app_config:
+        _app_config[app_name] = {"role": "auto", "vol": 1.0}
+    return _app_config[app_name]
+
+
+def set_app_config(app_name, role=None, vol=None):
+    """Update per-app config and persist."""
+    cfg = get_app_config(app_name)
+    if role is not None:
+        cfg["role"] = str(role)
+    if vol is not None:
+        cfg["vol"] = max(0.0, min(1.0, float(vol)))
+    _app_config[app_name] = cfg
+    save_config()
+
+
+def get_current_sessions():
+    """Return the latest session snapshot for the GUI."""
+    with _lock:
+        return list(_current_sessions)
 
 
 def get_foreground_pid():
@@ -343,6 +411,7 @@ def restore_all_volumes():
 
 
 def monitor_loop():
+    global _current_sessions
     # COM must be initialized on each thread that uses Windows audio APIs.
     import comtypes
     comtypes.CoInitialize()
@@ -404,72 +473,67 @@ def monitor_loop():
             except Exception:
                 continue
 
-        focused_single_key = None
-        fg_is_active_audio = False
+        # Update session snapshot for the GUI
+        with _lock:
+            _current_sessions.clear()
+            for info in session_infos:
+                cfg = get_app_config(info["name"])
+                _current_sessions.append(
+                    {"name": info["name"], "display": info["display"],
+                     "active": info["active"], "focused": info["same_app_focus"],
+                     "volume": info["volume"], "role": cfg["role"], "manual_vol": cfg["vol"]}
+                )
 
-        if fg_name in SINGLE_FOCUS_APPS:
-            focused_candidates = [
-                info for info in session_infos if info["same_app_focus"]
-            ]
-            focused_single_key = choose_focused_session(focused_candidates, fg_name, fg_title)
-
-            if focused_single_key is not None:
-                chosen = next((info for info in focused_candidates if info["key"] == focused_single_key), None)
-                fg_is_active_audio = bool(chosen and chosen["active"])
-                if chosen:
-                    peak = get_session_peak(chosen["session"])
-                    log.debug(f"FOCUSED: {fg_name} | vol={chosen['volume']:.3f} | peak={peak:.5f} | state={chosen['active']} | fg_active={fg_is_active_audio}")
-        else:
-            fg_is_active_audio = any(info["active"] for info in session_infos if info["same_app_focus"])
-
-        fallback_key = None
-        if RESUME_BACKGROUND_WHEN_FOCUS_SILENT and not fg_is_active_audio:
-            fallback_candidates = [
-                info
-                for info in session_infos
-                if not info["same_app_focus"]
-                and info["active"]
-                and max(info["remembered"], info["volume"]) > 0.05
-            ]
-            fallback_key = choose_background_session(fallback_candidates)
-            log.debug(f"FALLBACK: candidates={len(fallback_candidates)} | chosen={fallback_key is not None}")
+        # ── Role-based Ducking Logic ──
+        ducking_level = get_global_ducking()
+        main_is_active = False
         
-        if fg_is_active_audio:
-            log.debug(f"fg_active=True, no fallback needed")
-
+        # 1. Detect if ANY Main app is currently playing audio
+        for info in session_infos:
+            app_name = info["name"]
+            cfg = get_app_config(app_name)
+            role = cfg["role"]
+            
+            is_main = False
+            if role == "main":
+                is_main = True
+            elif role == "auto":
+                is_main = info["same_app_focus"]
+                
+            if is_main and info["active"]:
+                main_is_active = True
+                break
+                
+        # 2. Apply volumes to all sessions based on roles
         for info in session_infos:
             try:
                 session = info["session"]
                 session_key = info["key"]
-                is_focused = info["same_app_focus"]
+                app_name = info["name"]
+                
+                cfg = get_app_config(app_name)
+                role = cfg["role"]
+                manual_vol = cfg["vol"]
+                
+                if role == "ignore":
+                    continue
+                    
+                is_main = False
+                if role == "main":
+                    is_main = True
+                elif role == "auto":
+                    is_main = info["same_app_focus"]
+                    
+                # A Background app ducks if Main is active
+                if role == "background":
+                    is_main = False
 
-                if fg_name in SINGLE_FOCUS_APPS and info["name"] == fg_name:
-                    is_focused = (
-                        focused_single_key is not None
-                        and session_key == focused_single_key
-                    )
-
-                if fallback_key is not None and session_key == fallback_key:
-                    is_focused = True
-
-                with _lock:
-                    token = _fade_tokens.get(session_key)
-                    is_fading = token in _active_fades
-
-                if is_focused:
-                    # Capture manual volume overrides during steady focus state
-                    current = info["volume"]
-                    if not is_fading and current > 0.05:
-                        with _lock:
-                            _session_volumes[session_key] = current
-
-                    # Restore volume for focused process
-                    with _lock:
-                        saved = _session_volumes.get(session_key, RESTORE_VOLUME)
-                    target = max(0.0, min(1.0, saved))
-                    start_fade(session, session_key, target)
+                if is_main:
+                    target = manual_vol
                 else:
-                    start_fade(session, session_key, 0.0)
+                    target = manual_vol * ducking_level if main_is_active else manual_vol
+                    
+                start_fade(session, session_key, target)
 
             except Exception:
                 continue
@@ -556,6 +620,23 @@ def _animate_icon(icon):
         _icon_anim_stop.wait(1.0 / _ICON_ANIM_FPS)
 
 
+_mixer_window = None
+
+
+def open_mixer(icon, item):
+    """Open the mixer GUI window."""
+    global _mixer_window
+    try:
+        from mixer_gui import MixerWindow
+        if _mixer_window is None or not _mixer_window.is_open():
+            _mixer_window = MixerWindow()
+            _mixer_window.show()
+        else:
+            _mixer_window.close()
+    except Exception as e:
+        log.debug(f"Mixer error: {e}")
+
+
 def toggle(icon, item):
     global enabled
     enabled = not enabled
@@ -570,7 +651,6 @@ def toggle(icon, item):
 
 def quit_app(icon, item):
     _icon_anim_stop.set()
-    # Restore all volumes before quitting
     restore_all_volumes()
     icon.stop()
     sys.exit(0)
@@ -585,7 +665,8 @@ def run_tray():
         make_icon(True),
         "FocusAudio — ON",
         menu=pystray.Menu(
-            pystray.MenuItem("Toggle on/off", toggle, default=True),
+            pystray.MenuItem("Open Mixer", open_mixer, default=True),
+            pystray.MenuItem("Toggle on/off", toggle),
             pystray.MenuItem("Quit (restore volumes)", quit_app),
         )
     )
@@ -597,15 +678,94 @@ def run_tray():
     icon.run()
 
 
+# ── Auto Updater ─────────────────────────────────────────────────────────────
+
+def run_update(download_url):
+    try:
+        temp_dir = tempfile.gettempdir()
+        new_exe_path = os.path.join(temp_dir, "FocusAudio_update.exe")
+        
+        log.debug("Downloading update...")
+        urllib.request.urlretrieve(download_url, new_exe_path)
+        
+        current_exe = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
+        
+        if not getattr(sys, 'frozen', False):
+            log.info("Not running as compiled exe, skipping auto-update overwrite.")
+            return
+
+        bat_path = os.path.join(temp_dir, "update_focusaudio.bat")
+        
+        bat_content = f"""@echo off
+timeout /t 2 /nobreak > NUL
+move /y "{new_exe_path}" "{current_exe}"
+start "" "{current_exe}"
+del "%~f0"
+"""
+        with open(bat_path, "w") as f:
+            f.write(bat_content)
+            
+        subprocess.Popen([bat_path], shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        
+        # Terminate current app to allow overwrite
+        os._exit(0)
+    except Exception as e:
+        log.error(f"Failed to run update: {e}")
+
+
+def check_for_updates():
+    try:
+        url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/releases/latest"
+        req = urllib.request.Request(url, headers={'User-Agent': 'FocusAudio-Updater'})
+        with urllib.request.urlopen(req, timeout=5) as response:
+            data = json.loads(response.read().decode())
+            
+        latest_tag = data.get("tag_name", "").lstrip('v')
+        assets = data.get("assets", [])
+        
+        download_url = None
+        for asset in assets:
+            if asset.get("name", "").lower() == "focusaudio.exe":
+                download_url = asset.get("browser_download_url")
+                break
+                
+        if latest_tag and latest_tag != VERSION and download_url:
+            import ctypes
+            MB_YESNO = 0x04
+            MB_ICONQUESTION = 0x20
+            MB_SYSTEMMODAL = 0x1000
+            IDYES = 6
+            result = ctypes.windll.user32.MessageBoxW(
+                0, 
+                f"A new version of FocusAudio (v{latest_tag}) is available!\\n\\nWould you like to download and install it now?", 
+                "FocusAudio Update", 
+                MB_YESNO | MB_ICONQUESTION | MB_SYSTEMMODAL
+            )
+            if result == IDYES:
+                run_update(download_url)
+                
+    except Exception as e:
+        log.info(f"Update check failed: {e}")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import sys
+    sys.modules["focus_audio"] = sys.modules["__main__"]
+    
+    load_config()
+
     print("FocusAudio starting...")
     print(f"  Fade duration : {FADE_DURATION}s")
     print(f"  Poll interval : {POLL_INTERVAL}s")
     print(f"  Whitelist     : {WHITELIST or 'none'}")
+    print(f"  Version       : {VERSION}")
     print("Running — switch windows to hear the fade effect.")
     print("Close this window or use the tray icon to quit.\n")
+
+    # Start update checker in the background
+    threading.Thread(target=check_for_updates, daemon=True).start()
 
     t = threading.Thread(target=monitor_loop, daemon=True)
     t.start()
