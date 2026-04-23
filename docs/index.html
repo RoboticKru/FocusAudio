@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FocusAudio — Smart Audio Focus for Windows</title>
+  <meta name="description" content="FocusAudio automatically manages your Windows audio so only the focused app plays sound. Background apps gracefully fade out. Perfect for lectures, music, and multitasking.">
+  <meta name="keywords" content="Windows audio manager, focus audio, background music fade, lecture mode, audio control">
+  <meta property="og:title" content="FocusAudio — Smart Audio Focus for Windows">
+  <meta property="og:description" content="Only the focused window makes sound. Everything else fades out.">
+  <meta property="og:type" content="website">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Ambient background -->
+  <div class="ambient">
+    <div class="ambient-orb"></div>
+    <div class="ambient-orb"></div>
+    <div class="ambient-orb"></div>
+  </div>
+
+  <!-- Navigation -->
+  <nav>
+    <div class="container nav-inner">
+      <a href="#" class="nav-logo">
+        <div class="nav-logo-icon">🎧</div>
+        FocusAudio
+      </a>
+      <ul class="nav-links">
+        <li><a href="#features">Features</a></li>
+        <li><a href="#how-it-works">How It Works</a></li>
+        <li><a href="#download">Download</a></li>
+      </ul>
+      <a href="https://github.com/RoboticKru/FocusAudio" class="nav-cta" target="_blank">
+        ⭐ GitHub
+      </a>
+    </div>
+  </nav>
+
+  <!-- Hero -->
+  <section class="hero" id="hero">
+    <div class="container">
+      <div class="hero-content">
+        <div class="hero-badge">Open Source · Windows</div>
+        <h1>One window.<br><span class="gradient-text">One sound.</span></h1>
+        <p class="hero-subtitle">
+          FocusAudio intelligently manages your Windows audio so only the focused application plays sound. Background apps gracefully fade out — and back in when you need them.
+        </p>
+        <div class="hero-actions">
+          <a href="https://github.com/RoboticKru/FocusAudio/releases" class="btn-primary" id="download-btn">
+            ⬇ Download .exe
+          </a>
+          <a href="https://github.com/RoboticKru/FocusAudio" class="btn-secondary" target="_blank" id="github-btn">
+            View Source
+          </a>
+        </div>
+
+        <div class="visualiser">
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+          <div class="bar"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Features -->
+  <section id="features">
+    <div class="container">
+      <div class="section-header fade-in">
+        <p class="section-label">Features</p>
+        <h2 class="section-title">Built for multitaskers</h2>
+        <p class="section-desc">Whether you're watching lectures while listening to music, or juggling calls and videos — FocusAudio keeps your ears focused.</p>
+      </div>
+      <div class="features-grid">
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🎵</div>
+          <h3>Smooth Crossfading</h3>
+          <p>Audio gracefully fades in and out over 1.2 seconds instead of jarring, instant muting. Feels natural and seamless.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🧠</div>
+          <h3>Smart Fallback</h3>
+          <p>Paused your lecture? FocusAudio detects the silence and automatically fades your background music back in, hands-free.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🌐</div>
+          <h3>Multi-Browser Aware</h3>
+          <p>Intelligently handles Chrome, Edge, Firefox, Brave, Opera, and Vivaldi — matching audio sessions to active tabs by title.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">🛡️</div>
+          <h3>Whitelist Apps</h3>
+          <p>Mark apps like Discord or Spotify to never be muted, no matter what. Your important audio stays untouched.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">📌</div>
+          <h3>System Tray</h3>
+          <p>Runs silently in your system tray. Toggle on and off or quit with a simple right-click. Zero desktop clutter.</p>
+        </div>
+        <div class="feature-card fade-in">
+          <div class="feature-icon">⚡</div>
+          <h3>Lightweight</h3>
+          <p>Tiny footprint. No background services, no telemetry, no internet required. Just a single portable .exe file.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How It Works -->
+  <section id="how-it-works">
+    <div class="container">
+      <div class="section-header fade-in">
+        <p class="section-label">How It Works</p>
+        <h2 class="section-title">Up and running in seconds</h2>
+        <p class="section-desc">No installation wizards, no configuration files, no admin permissions needed.</p>
+      </div>
+      <div class="steps">
+        <div class="step fade-in">
+          <div class="step-line">
+            <div class="step-number">1</div>
+            <div class="step-connector"></div>
+          </div>
+          <div class="step-content">
+            <h3>Download FocusAudio.exe</h3>
+            <p>Grab the single portable executable from GitHub Releases. No Python or dependencies needed.</p>
+          </div>
+        </div>
+        <div class="step fade-in">
+          <div class="step-line">
+            <div class="step-number">2</div>
+            <div class="step-connector"></div>
+          </div>
+          <div class="step-content">
+            <h3>Double-click to run</h3>
+            <p>FocusAudio launches silently into your system tray. No windows, no clutter. You'll see a small green icon near your clock.</p>
+          </div>
+        </div>
+        <div class="step fade-in">
+          <div class="step-line">
+            <div class="step-number">3</div>
+            <div class="step-connector"></div>
+          </div>
+          <div class="step-content">
+            <h3>Just use your computer</h3>
+            <p>Switch between apps as you normally would. FocusAudio automatically fades audio in and out based on which window is active. Enjoy the focus.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="cta-section" id="download">
+    <div class="container">
+      <div class="cta-box fade-in">
+        <h2>Ready to focus?</h2>
+        <p>Download FocusAudio for free. Open source, lightweight, and built for Windows.</p>
+        <a href="https://github.com/RoboticKru/FocusAudio/releases" class="btn-primary" id="cta-download-btn">
+          ⬇ Download for Windows
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer -->
+  <footer>
+    <div class="container">
+      <p>FocusAudio is open source under <a href="https://github.com/RoboticKru/FocusAudio/blob/main/LICENSE" target="_blank">MIT License</a>. Built with ❤️ on Windows.</p>
+    </div>
+  </footer>
+
+  <script>
+    // Scroll-triggered fade-in animations
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+        }
+      });
+    }, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+
+    document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+  </script>
+
+</body>
+</html>
