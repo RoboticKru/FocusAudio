@@ -18,6 +18,13 @@ import json
 import urllib.request
 import tempfile
 import subprocess
+import asyncio
+
+try:
+    from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
+    HAS_WINSDK = True
+except ImportError:
+    HAS_WINSDK = False
 
 VERSION = "2.0.0"
 REPO_OWNER = "RoboticKru"
@@ -112,11 +119,16 @@ def save_config():
 def get_global_ducking():
     return _global_config.get("ducking_level", 0.20)
 
-
 def set_global_ducking(level):
     _global_config["ducking_level"] = max(0.0, min(1.0, float(level)))
     save_config()
 
+def get_pause_background():
+    return _global_config.get("pause_background", False)
+
+def set_pause_background(enabled):
+    _global_config["pause_background"] = bool(enabled)
+    save_config()
 
 def get_app_config(app_name):
     """Get per-app config, creating defaults if needed."""
@@ -410,8 +422,121 @@ def restore_all_volumes():
             continue
 
 
+# ── SMTC Media Manager ───────────────────────────────────────────────────────
+_media_manager = None
+_media_loop = None
+
+def _init_media_manager():
+    global _media_manager, _media_loop
+    if not HAS_WINSDK: return
+    _media_loop = asyncio.new_event_loop()
+    threading.Thread(target=_media_loop.run_forever, daemon=True).start()
+    try:
+        _media_manager = asyncio.run_coroutine_threadsafe(
+            GlobalSystemMediaTransportControlsSessionManager.request_async(),
+            _media_loop
+        ).result()
+    except Exception as e:
+        log.error(f"Failed to init media manager: {e}")
+
+def _get_media_session(app_name):
+    if not _media_manager: return None
+    try:
+        for session in _media_manager.get_sessions():
+            if app_name.lower() in session.source_app_user_model_id.lower():
+                return session
+    except Exception:
+        pass
+    return None
+
+def is_playing(app_name):
+    session = _get_media_session(app_name)
+    if session:
+        try:
+            info = session.get_playback_info()
+            return info and info.playback_status == 4 # 4 = Playing
+        except Exception:
+            pass
+    return False
+
+def pause_app_media(app_name):
+    session = _get_media_session(app_name)
+    if session and _media_loop:
+        asyncio.run_coroutine_threadsafe(session.try_pause_async(), _media_loop)
+
+def play_app_media(app_name):
+    session = _get_media_session(app_name)
+    if session and _media_loop:
+        asyncio.run_coroutine_threadsafe(session.try_play_async(), _media_loop)
+
+def get_current_media_info():
+    """Returns a dict with title, artist, status, thumbnail_bytes, and source_app."""
+    if not _media_manager: return None
+    try:
+        session = _media_manager.get_current_session()
+        if not session: return None
+        
+        # This is a synchronous call from the GUI thread to the async world, 
+        # but try_get_media_properties_async returns a coroutine. 
+        # Since GUI calls this synchronously, we must use run_coroutine_threadsafe and block.
+        future = asyncio.run_coroutine_threadsafe(session.try_get_media_properties_async(), _media_loop)
+        props = future.result(timeout=1.0)
+        
+        info = session.get_playback_info()
+        status = info.playback_status if info else 0
+        
+        thumb_bytes = None
+        if props.thumbnail:
+            try:
+                # We fetch thumbnail asynchronously to avoid freezing GUI
+                async def fetch_thumb():
+                    from winsdk.windows.storage.streams import Buffer, InputStreamOptions
+                    stream = await props.thumbnail.open_read_async()
+                    buf = Buffer(stream.size)
+                    await stream.read_async(buf, stream.size, InputStreamOptions.NONE)
+                    return memoryview(buf).tobytes()
+                    
+                thumb_future = asyncio.run_coroutine_threadsafe(fetch_thumb(), _media_loop)
+                thumb_bytes = thumb_future.result(timeout=1.0)
+            except Exception as e:
+                log.debug(f"Failed to read thumbnail: {e}")
+                
+        return {
+            "title": props.title,
+            "artist": props.artist,
+            "status": status,
+            "thumbnail_bytes": thumb_bytes,
+            "app": session.source_app_user_model_id
+        }
+    except Exception as e:
+        log.debug(f"get_current_media_info failed: {e}")
+        return None
+        
+def media_play_pause():
+    if not _media_manager: return
+    session = _media_manager.get_current_session()
+    if session and _media_loop:
+        asyncio.run_coroutine_threadsafe(session.try_toggle_play_pause_async(), _media_loop)
+
+def media_next():
+    if not _media_manager: return
+    session = _media_manager.get_current_session()
+    if session and _media_loop:
+        asyncio.run_coroutine_threadsafe(session.try_skip_next_async(), _media_loop)
+
+def media_prev():
+    if not _media_manager: return
+    session = _media_manager.get_current_session()
+    if session and _media_loop:
+        asyncio.run_coroutine_threadsafe(session.try_skip_previous_async(), _media_loop)
+
+# ── Monitor Loop ─────────────────────────────────────────────────────────────
+
 def monitor_loop():
     global _current_sessions
+    _init_media_manager()
+    _paused_by_us = set()
+    
     # COM must be initialized on each thread that uses Windows audio APIs.
     import comtypes
     comtypes.CoInitialize()
@@ -524,14 +649,28 @@ def monitor_loop():
                 elif role == "auto":
                     is_main = info["same_app_focus"]
                     
-                # A Background app ducks if Main is active
+                # A Background app ducks or pauses if Main is active
+                should_duck = False
                 if role == "background":
                     is_main = False
+                    should_duck = main_is_active
 
                 if is_main:
                     target = manual_vol
                 else:
-                    target = manual_vol * ducking_level if main_is_active else manual_vol
+                    if role == "background" and get_pause_background() and HAS_WINSDK:
+                        target = manual_vol
+                        if should_duck:
+                            if app_name not in _paused_by_us:
+                                if is_playing(app_name):
+                                    pause_app_media(app_name)
+                                    _paused_by_us.add(app_name)
+                        else:
+                            if app_name in _paused_by_us:
+                                play_app_media(app_name)
+                                _paused_by_us.remove(app_name)
+                    else:
+                        target = manual_vol * ducking_level if should_duck else manual_vol
                     
                 start_fade(session, session_key, target)
 

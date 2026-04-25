@@ -5,10 +5,16 @@ FocusAudio Mixer GUI — A sleek volume mixer popup for per-app audio control.
 import tkinter as tk
 from tkinter import ttk
 import threading
+import io
+
+try:
+    from PIL import Image, ImageTk, ImageDraw
+    HAS_PIL = True
+except ImportError:
+    HAS_PIL = False
 
 # Import the core module for config and session data
 import focus_audio
-
 
 # ── Theme ─────────────────────────────────────────────────────────────────────
 
@@ -29,6 +35,21 @@ COLORS = {
 
 FONT_FAMILY = "Segoe UI"
 
+def create_rounded_image(image_bytes, size=(64, 64), radius=12):
+    if not HAS_PIL: return None
+    try:
+        img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+        img = img.resize(size, Image.LANCZOS)
+        
+        mask = Image.new("L", size, 0)
+        draw = ImageDraw.Draw(mask)
+        draw.rounded_rectangle((0, 0, size[0], size[1]), radius=radius, fill=255)
+        
+        output = Image.new("RGBA", size, (0, 0, 0, 0))
+        output.paste(img, (0, 0), mask=mask)
+        return ImageTk.PhotoImage(output)
+    except Exception:
+        return None
 
 class MixerWindow:
     """Dark-themed popup mixer window with per-app volume controls."""
@@ -39,6 +60,15 @@ class MixerWindow:
         self._app_rows = {}
         self._refresh_job = None
         self._thread = None
+        
+        # Media Flyout UI elements
+        self._media_frame = None
+        self._album_art_label = None
+        self._song_title_label = None
+        self._artist_label = None
+        self._play_btn = None
+        self._current_thumb_bytes = None
+        self._tk_thumb = None
 
     def is_open(self):
         return self._open
@@ -142,11 +172,68 @@ class MixerWindow:
         # Divider
         tk.Frame(root, bg=COLORS["border"], height=1).pack(fill="x")
 
+        # ── Media Flyout ──
+        self._media_frame = tk.Frame(root, bg=COLORS["bg_card"], padx=16, pady=12)
+        # We start packed, but it will be hidden if no media
+        self._media_frame.pack(fill="x", padx=8, pady=(8, 0))
+        
+        # Album Art
+        self._album_art_label = tk.Label(self._media_frame, bg=COLORS["bg_card"])
+        self._album_art_label.pack(side="left")
+        
+        # Info & Controls Frame
+        info_frame = tk.Frame(self._media_frame, bg=COLORS["bg_card"])
+        info_frame.pack(side="left", fill="both", expand=True, padx=(12, 0))
+        
+        # Song Title
+        self._song_title_label = tk.Label(
+            info_frame, text="No media playing", 
+            font=(FONT_FAMILY, 11, "bold"), bg=COLORS["bg_card"], fg=COLORS["text"], anchor="w"
+        )
+        self._song_title_label.pack(fill="x")
+        
+        # Artist
+        self._artist_label = tk.Label(
+            info_frame, text="Waiting for media...", 
+            font=(FONT_FAMILY, 9), bg=COLORS["bg_card"], fg=COLORS["text_secondary"], anchor="w"
+        )
+        self._artist_label.pack(fill="x")
+        
+        # Controls Frame
+        controls_frame = tk.Frame(info_frame, bg=COLORS["bg_card"])
+        controls_frame.pack(fill="x", pady=(4, 0))
+        
+        btn_style = {"bg": COLORS["bg_card"], "fg": COLORS["text"], "relief": "flat", "cursor": "hand2", "activebackground": COLORS["bg_hover"], "bd": 0, "font": (FONT_FAMILY, 12)}
+        tk.Button(controls_frame, text="⏮", command=focus_audio.media_prev, **btn_style).pack(side="left", padx=4)
+        self._play_btn = tk.Button(controls_frame, text="⏯", command=focus_audio.media_play_pause, **btn_style)
+        self._play_btn.pack(side="left", padx=4)
+        tk.Button(controls_frame, text="⏭", command=focus_audio.media_next, **btn_style).pack(side="left", padx=4)
+
         # ── Global Ducking Footer ──
         footer = tk.Frame(root, bg=COLORS["bg"], padx=16, pady=8)
         footer.pack(fill="x", side="bottom")
 
         tk.Frame(footer, bg=COLORS["border"], height=1).pack(fill="x", pady=(0, 8))
+
+        # Pause Background Checkbox
+        pause_frame = tk.Frame(footer, bg=COLORS["bg"])
+        pause_frame.pack(fill="x", pady=(0, 6))
+        
+        pause_val = focus_audio.get_pause_background()
+        
+        def _on_pause_toggle():
+            new_val = not focus_audio.get_pause_background()
+            focus_audio.set_pause_background(new_val)
+            pause_btn.config(text="☑ Pause background apps instead of ducking" if new_val else "☐ Pause background apps instead of ducking")
+            
+        pause_btn = tk.Button(
+            pause_frame, 
+            text="☑ Pause background apps instead of ducking" if pause_val else "☐ Pause background apps instead of ducking",
+            font=(FONT_FAMILY, 9), bg=COLORS["bg"], fg=COLORS["text"],
+            relief="flat", cursor="hand2", bd=0, activebackground=COLORS["bg"], activeforeground=COLORS["accent_light"],
+            command=_on_pause_toggle, anchor="w"
+        )
+        pause_btn.pack(fill="x")
 
         tk.Label(
             footer, text="Background Ducking Volume",
@@ -286,9 +373,37 @@ class MixerWindow:
             with open("mixer_error.log", "w") as f:
                 f.write(traceback.format_exc())
 
+        # ── Refresh Media Flyout ──
+        try:
+            if hasattr(focus_audio, "get_current_media_info"):
+                media_info = focus_audio.get_current_media_info()
+                if media_info and media_info.get("title"):
+                    self._song_title_label.config(text=media_info["title"])
+                    self._artist_label.config(text=media_info["artist"] or media_info["app"] or "Unknown Artist")
+                    
+                    # Update Play/Pause icon (4 = Playing, 5 = Paused)
+                    is_playing = media_info["status"] == 4
+                    self._play_btn.config(text="⏸" if is_playing else "▶")
+                    
+                    # Update Album Art
+                    if media_info.get("thumbnail_bytes") and media_info["thumbnail_bytes"] != self._current_thumb_bytes:
+                        self._current_thumb_bytes = media_info["thumbnail_bytes"]
+                        new_img = create_rounded_image(self._current_thumb_bytes, size=(64, 64), radius=8)
+                        if new_img:
+                            self._tk_thumb = new_img
+                            self._album_art_label.config(image=self._tk_thumb)
+                else:
+                    self._song_title_label.config(text="No media playing")
+                    self._artist_label.config(text="")
+                    self._play_btn.config(text="▶")
+                    self._album_art_label.config(image="")
+                    self._current_thumb_bytes = None
+        except Exception as e:
+            pass
+
         # Schedule next refresh
         try:
-            self._refresh_job = self._root.after(2000, self._refresh_sessions)
+            self._refresh_job = self._root.after(1000, self._refresh_sessions)
         except Exception:
             pass
 
