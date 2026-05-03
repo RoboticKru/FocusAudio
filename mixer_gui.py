@@ -254,7 +254,6 @@ class MixerWindow:
         self._album_art_label = None
         self._song_title_label = None
         self._artist_label = None
-        self._play_btn = None
         self._current_thumb_bytes = None
         self._tk_thumb = None
 
@@ -464,23 +463,6 @@ class MixerWindow:
             anchor="w"
         )
         self._artist_label.pack(fill="x")
-
-        ctrl = tk.Frame(info_col, bg="#1c1c2c")
-        ctrl.pack(fill="x", pady=(6, 0))
-
-        btn_kw = dict(
-            bg="#1c1c2c", fg=COLORS["text_secondary"],
-            relief="flat", cursor="hand2", bd=0,
-            font=(FONT, 13),
-            activebackground="#252540",
-            activeforeground=COLORS["accent_light"],
-        )
-        prev_btn = tk.Button(ctrl, text="⏮", command=focus_audio.media_prev, **btn_kw)
-        prev_btn.pack(side="left")
-        self._play_btn = tk.Button(ctrl, text="▶", command=focus_audio.media_play_pause, **btn_kw)
-        self._play_btn.pack(side="left", padx=4)
-        next_btn = tk.Button(ctrl, text="⏭", command=focus_audio.media_next, **btn_kw)
-        next_btn.pack(side="left")
 
         self._media_frame = wrap
 
@@ -697,9 +679,6 @@ class MixerWindow:
                 artist = media_info.get("artist") or media_info.get("app") or "Unknown"
                 self._artist_label.config(text=artist)
 
-                is_playing_now = media_info.get("status") == 4
-                self._play_btn.config(text="⏸" if is_playing_now else "▶")
-
                 thumb = media_info.get("thumbnail_bytes")
                 if thumb and thumb != self._current_thumb_bytes:
                     self._current_thumb_bytes = thumb
@@ -714,13 +693,11 @@ class MixerWindow:
                 if fallback:
                     self._song_title_label.config(text=fallback["title"])
                     self._artist_label.config(text=fallback["artist"])
-                    self._play_btn.config(text="▶")
                     self._album_art_label.config(image="", width=0)
                     self._current_thumb_bytes = None
                 else:
                     self._song_title_label.config(text="No media playing")
                     self._artist_label.config(text="—")
-                    self._play_btn.config(text="▶")
                     self._album_art_label.config(image="", width=0)
                     self._current_thumb_bytes = None
         except Exception:
