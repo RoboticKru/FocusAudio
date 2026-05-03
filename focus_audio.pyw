@@ -21,7 +21,7 @@ import subprocess
 import asyncio
 
 try:
-    from winsdk.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
+    from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
     HAS_WINSDK = True
 except ImportError:
     HAS_WINSDK = False
@@ -639,7 +639,7 @@ def get_current_media_info():
         if props.thumbnail:
             try:
                 async def fetch_thumb():
-                    from winsdk.windows.storage.streams import Buffer, InputStreamOptions
+                    from winrt.windows.storage.streams import Buffer, InputStreamOptions
                     stream = await props.thumbnail.open_read_async()
                     buf = Buffer(stream.size)
                     await stream.read_async(buf, stream.size, InputStreamOptions.NONE)
