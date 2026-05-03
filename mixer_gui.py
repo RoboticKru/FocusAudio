@@ -682,9 +682,15 @@ class MixerWindow:
         except Exception:
             pass
 
-        # Refresh media flyout — try SMTC first, fall back to active audio session
+        # Refresh media flyout.
+        # SMTC call is isolated so a timeout/exception still lets the fallback run.
+        media_info = None
         try:
             media_info = focus_audio.get_current_media_info()
+        except Exception:
+            pass
+
+        try:
             if media_info and media_info.get("title"):
                 # ── SMTC gave us proper track info (Spotify, Windows Media Player, etc.) ──
                 self._song_title_label.config(text=media_info["title"])

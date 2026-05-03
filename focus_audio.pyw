@@ -26,7 +26,7 @@ try:
 except ImportError:
     HAS_WINSDK = False
 
-VERSION = "2.0.1"
+VERSION = "2.2.0"
 REPO_OWNER = "RoboticKru"
 REPO_NAME = "FocusAudio"
 
