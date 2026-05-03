@@ -605,14 +605,22 @@ def is_playing(app_name):
     return False
 
 def pause_app_media(app_name):
+    """Pause app via SMTC if registered, otherwise simulate the media Play/Pause key."""
     session = _get_media_session(app_name)
     if session and _media_loop:
         asyncio.run_coroutine_threadsafe(session.try_pause_async(), _media_loop)
+    else:
+        # Chrome, SimplyMusic etc. don't register SMTC sessions.
+        # Sending the global media key is the only reliable way to reach them.
+        _send_media_key(_VK_MEDIA_PLAY_PAUSE)
 
 def play_app_media(app_name):
+    """Resume app via SMTC if registered, otherwise simulate the media Play/Pause key."""
     session = _get_media_session(app_name)
     if session and _media_loop:
         asyncio.run_coroutine_threadsafe(session.try_play_async(), _media_loop)
+    else:
+        _send_media_key(_VK_MEDIA_PLAY_PAUSE)
 
 def get_current_media_info():
     """Returns a dict with title, artist, status, thumbnail_bytes, and source_app."""
@@ -874,7 +882,7 @@ def monitor_loop():
                     start_fade(session, session_key, manual_vol)
 
                 else:
-                    if role == "background" and get_pause_background() and HAS_WINSDK:
+                    if role == "background" and get_pause_background():
                         # ── Mode 1: Instant pause ──
                         if should_duck:
                             if app_name not in _paused_by_us:
@@ -887,7 +895,7 @@ def monitor_loop():
                                 _paused_by_us.discard(app_name)
                         start_fade(session, session_key, manual_vol)
 
-                    elif get_pause_after_fade() and HAS_WINSDK:
+                    elif get_pause_after_fade():
                         # ── Mode 2: Fade to silence, then pause ──
                         if should_duck:
                             if app_name not in _paused_after_fade:
