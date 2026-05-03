@@ -237,6 +237,66 @@ def get_session_display_name(session):
         return ""
 
 
+# ── Friendly process-name lookup ─────────────────────────────────────────────
+
+_FRIENDLY_NAMES = {
+    # Browsers
+    "chrome":               "Chrome",
+    "firefox":              "Firefox",
+    "msedge":               "Microsoft Edge",
+    "msedgewebview2":       "Edge WebView",
+    "opera":                "Opera",
+    "brave":                "Brave",
+    "iexplore":             "Internet Explorer",
+    # Music / media players
+    "spotify":              "Spotify",
+    "vlc":                  "VLC",
+    "wmplayer":             "Windows Media Player",
+    "groove":               "Groove Music",
+    "itunes":               "iTunes",
+    "winamp":               "Winamp",
+    "foobar2000":           "foobar2000",
+    "musicbee":             "MusicBee",
+    "aimp":                 "AIMP",
+    "amazon music":         "Amazon Music",
+    "amazonmusic":          "Amazon Music",
+    "applemusic":           "Apple Music",
+    "tidal":                "TIDAL",
+    "deezer":               "Deezer",
+    "youtubemusic":         "YouTube Music",
+    # Communication
+    "discord":              "Discord",
+    "teams":                "Microsoft Teams",
+    "slack":                "Slack",
+    "zoom":                 "Zoom",
+    "skype":                "Skype",
+    "telegram":             "Telegram",
+    "whatsapp":             "WhatsApp",
+    "whatsapp.root":        "WhatsApp",
+    # System / drivers
+    "rtkuwp":               "Realtek Audio",
+    "audiodg":              "Windows Audio",
+    "svchost":              "Windows Service",
+    "msedge webview2":      "Edge WebView",
+    # Streaming / games
+    "obs64":                "OBS Studio",
+    "obs32":                "OBS Studio",
+    "obs":                  "OBS Studio",
+    "netflix":              "Netflix",
+    "amazonprimevideo":     "Prime Video",
+    "disneyplus":           "Disney+",
+    "steam":                "Steam",
+    "epicgameslauncher":    "Epic Games",
+    "battle.net":           "Battle.net",
+}
+
+
+def get_friendly_name(process_name: str) -> str:
+    """Return a human-readable display name for a process name."""
+    key = process_name.lower().replace(".exe", "").strip()
+    return _FRIENDLY_NAMES.get(key, process_name.replace("_", " ").title())
+
+
 def get_session_peak(session):
     """Get the current audio peak level (0.0-1.0) from the session's meter."""
     try:
@@ -593,23 +653,70 @@ def get_current_media_info():
         log.debug(f"get_current_media_info failed: {e}")
         return None
 
+# Virtual-key codes for media keys (work system-wide via keybd_event)
+_VK_MEDIA_PLAY_PAUSE = 0xB3
+_VK_MEDIA_NEXT_TRACK = 0xB0
+_VK_MEDIA_PREV_TRACK = 0xB1
+_KEYEVENTF_KEYUP     = 0x0002
+
+
+def _send_media_key(vk: int):
+    """Simulate a hardware media key press via the Win32 keybd_event API.
+    This works for any app that captures global media keys (Chrome, VLC, etc.)."""
+    try:
+        import ctypes
+        ctypes.windll.user32.keybd_event(vk, 0, 0, 0)           # key down
+        ctypes.windll.user32.keybd_event(vk, 0, _KEYEVENTF_KEYUP, 0)  # key up
+    except Exception as e:
+        log.debug(f"_send_media_key({vk:#x}) failed: {e}")
+
+
 def media_play_pause():
-    if not _media_manager: return
-    session = _media_manager.get_current_session()
-    if session and _media_loop:
-        asyncio.run_coroutine_threadsafe(session.try_toggle_play_pause_async(), _media_loop)
+    """Toggle play/pause: tries SMTC first, falls back to simulated media key."""
+    sent = False
+    if _media_manager and _media_loop:
+        try:
+            session = _media_manager.get_current_session()
+            if session:
+                asyncio.run_coroutine_threadsafe(
+                    session.try_toggle_play_pause_async(), _media_loop)
+                sent = True
+        except Exception:
+            pass
+    if not sent:
+        _send_media_key(_VK_MEDIA_PLAY_PAUSE)
+
 
 def media_next():
-    if not _media_manager: return
-    session = _media_manager.get_current_session()
-    if session and _media_loop:
-        asyncio.run_coroutine_threadsafe(session.try_skip_next_async(), _media_loop)
+    """Skip to next track: tries SMTC first, falls back to simulated media key."""
+    sent = False
+    if _media_manager and _media_loop:
+        try:
+            session = _media_manager.get_current_session()
+            if session:
+                asyncio.run_coroutine_threadsafe(
+                    session.try_skip_next_async(), _media_loop)
+                sent = True
+        except Exception:
+            pass
+    if not sent:
+        _send_media_key(_VK_MEDIA_NEXT_TRACK)
+
 
 def media_prev():
-    if not _media_manager: return
-    session = _media_manager.get_current_session()
-    if session and _media_loop:
-        asyncio.run_coroutine_threadsafe(session.try_skip_previous_async(), _media_loop)
+    """Skip to previous track: tries SMTC first, falls back to simulated media key."""
+    sent = False
+    if _media_manager and _media_loop:
+        try:
+            session = _media_manager.get_current_session()
+            if session:
+                asyncio.run_coroutine_threadsafe(
+                    session.try_skip_previous_async(), _media_loop)
+                sent = True
+        except Exception:
+            pass
+    if not sent:
+        _send_media_key(_VK_MEDIA_PREV_TRACK)
 
 # ── Monitor Loop ─────────────────────────────────────────────────────────────
 

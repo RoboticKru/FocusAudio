@@ -757,7 +757,7 @@ class MixerWindow:
         # App name
         name_lbl = tk.Label(
             header,
-            text=app_name.replace("_", " ").title(),
+            text=focus_audio.get_friendly_name(app_name),
             font=(FONT, 10, "bold"),
             bg=COLORS["bg_card_solid"],
             fg=COLORS["text"],
