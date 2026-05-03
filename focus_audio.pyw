@@ -26,7 +26,7 @@ try:
 except ImportError:
     HAS_WINSDK = False
 
-VERSION = "2.0.0"
+VERSION = "2.0.1"
 REPO_OWNER = "RoboticKru"
 REPO_NAME = "FocusAudio"
 
@@ -88,6 +88,7 @@ _silence_timers = {}    # session_key -> timestamp when silence was first detect
 _current_sessions = []  # latest session snapshot for the GUI
 _lock = threading.Lock()
 _refresh_requested = threading.Event()
+_mixer_lock = threading.Lock()  # guards mixer window creation
 
 # ── Per-app config & roles ───────────────────────────────────────────────────
 _CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'focusaudio_config.json')
@@ -394,7 +395,12 @@ def start_fade(session, session_key, target_vol):
 
     with _lock:
         previous_target = _session_targets.get(session_key)
-        if previous_target is not None and abs(previous_target - target_vol) < 0.01:
+        # BUG FIX: only skip if a fade to this exact target is already in
+        # progress (token still active). A stale target with no active fade
+        # must NOT suppress a new fade — the session may have restarted.
+        current_token = _fade_tokens.get(session_key)
+        fade_in_progress = current_token is not None and current_token in _active_fades
+        if fade_in_progress and previous_target is not None and abs(previous_target - target_vol) < 0.01:
             return
 
         _session_targets[session_key] = target_vol
@@ -410,7 +416,28 @@ def start_fade(session, session_key, target_vol):
     ).start()
 
 
+def _cleanup_stale_session_data(live_keys):
+    """Remove tracking data for sessions that are no longer present.
+    Call this periodically from the monitor loop to prevent stale targets
+    from blocking future fades when a session disappears and reappears."""
+    with _lock:
+        stale = set(_session_targets.keys()) - live_keys
+        for key in stale:
+            _session_targets.pop(key, None)
+            _fade_tokens.pop(key, None)
+            _silence_timers.pop(key, None)
+            # Keep _session_volumes — it holds the pre-mute volume we want to
+            # restore if the session reappears. Prune only very old entries.
+
+        # Prune _session_volumes that haven't been seen for a long time
+        # (not in live_keys AND not referenced by any active fade)
+        vol_stale = set(_session_volumes.keys()) - live_keys
+        for key in vol_stale:
+            _session_volumes.pop(key, None)
+
+
 def restore_all_volumes():
+    """Restore all sessions to their pre-mute volumes and resume any paused apps."""
     for session in get_audio_sessions():
         try:
             pid = get_session_pid(session)
@@ -420,6 +447,21 @@ def restore_all_volumes():
             set_session_volume(session, saved)
         except Exception:
             continue
+
+
+def restore_all_volumes_and_resume():
+    """Restore volumes AND resume any media apps we paused. Used on disable."""
+    restore_all_volumes()
+    if HAS_WINSDK and _paused_by_us_ref:
+        for app_name in list(_paused_by_us_ref):
+            try:
+                play_app_media(app_name)
+            except Exception:
+                pass
+        _paused_by_us_ref.clear()
+
+# Shared reference to the _paused_by_us set so restore can drain it
+_paused_by_us_ref = set()
 
 
 # ── SMTC Media Manager ───────────────────────────────────────────────────────
@@ -475,32 +517,28 @@ def get_current_media_info():
     try:
         session = _media_manager.get_current_session()
         if not session: return None
-        
-        # This is a synchronous call from the GUI thread to the async world, 
-        # but try_get_media_properties_async returns a coroutine. 
-        # Since GUI calls this synchronously, we must use run_coroutine_threadsafe and block.
+
         future = asyncio.run_coroutine_threadsafe(session.try_get_media_properties_async(), _media_loop)
         props = future.result(timeout=1.0)
-        
+
         info = session.get_playback_info()
         status = info.playback_status if info else 0
-        
+
         thumb_bytes = None
         if props.thumbnail:
             try:
-                # We fetch thumbnail asynchronously to avoid freezing GUI
                 async def fetch_thumb():
                     from winsdk.windows.storage.streams import Buffer, InputStreamOptions
                     stream = await props.thumbnail.open_read_async()
                     buf = Buffer(stream.size)
                     await stream.read_async(buf, stream.size, InputStreamOptions.NONE)
                     return memoryview(buf).tobytes()
-                    
+
                 thumb_future = asyncio.run_coroutine_threadsafe(fetch_thumb(), _media_loop)
                 thumb_bytes = thumb_future.result(timeout=1.0)
             except Exception as e:
                 log.debug(f"Failed to read thumbnail: {e}")
-                
+
         return {
             "title": props.title,
             "artist": props.artist,
@@ -511,7 +549,7 @@ def get_current_media_info():
     except Exception as e:
         log.debug(f"get_current_media_info failed: {e}")
         return None
-        
+
 def media_play_pause():
     if not _media_manager: return
     session = _media_manager.get_current_session()
@@ -533,13 +571,15 @@ def media_prev():
 # ── Monitor Loop ─────────────────────────────────────────────────────────────
 
 def monitor_loop():
-    global _current_sessions
+    global _current_sessions, _paused_by_us_ref
     _init_media_manager()
-    _paused_by_us = set()
-    
+    _paused_by_us = _paused_by_us_ref  # shared reference
+
     # COM must be initialized on each thread that uses Windows audio APIs.
     import comtypes
     comtypes.CoInitialize()
+
+    _stale_cleanup_counter = 0
 
     while True:
         if _refresh_requested.is_set():
@@ -609,46 +649,63 @@ def monitor_loop():
                      "volume": info["volume"], "role": cfg["role"], "manual_vol": cfg["vol"]}
                 )
 
+        # Periodically clean up stale session tracking data (every ~5 seconds)
+        _stale_cleanup_counter += 1
+        if _stale_cleanup_counter >= int(5.0 / POLL_INTERVAL):
+            _stale_cleanup_counter = 0
+            live_keys = {info["key"] for info in session_infos}
+            _cleanup_stale_session_data(live_keys)
+
         # ── Role-based Ducking Logic ──
         ducking_level = get_global_ducking()
         main_is_active = False
-        
-        # 1. Detect if ANY Main app is currently playing audio
+        focused_main_is_silent = False
+
+        # 1. Detect if ANY Main app is currently playing audio, and whether
+        #    the focused main app is silent (for RESUME_BACKGROUND_WHEN_FOCUS_SILENT)
         for info in session_infos:
             app_name = info["name"]
             cfg = get_app_config(app_name)
             role = cfg["role"]
-            
+
             is_main = False
             if role == "main":
                 is_main = True
             elif role == "auto":
                 is_main = info["same_app_focus"]
-                
-            if is_main and info["active"]:
-                main_is_active = True
-                break
-                
+
+            if is_main:
+                if info["active"]:
+                    main_is_active = True
+                else:
+                    # Main app is focused but silent (e.g. paused lecture)
+                    focused_main_is_silent = True
+
+        # If RESUME_BACKGROUND_WHEN_FOCUS_SILENT is on, a focused-but-silent main
+        # does NOT count as "main active" — background audio should come back.
+        if RESUME_BACKGROUND_WHEN_FOCUS_SILENT and focused_main_is_silent and not main_is_active:
+            main_is_active = False
+
         # 2. Apply volumes to all sessions based on roles
         for info in session_infos:
             try:
                 session = info["session"]
                 session_key = info["key"]
                 app_name = info["name"]
-                
+
                 cfg = get_app_config(app_name)
                 role = cfg["role"]
                 manual_vol = cfg["vol"]
-                
+
                 if role == "ignore":
                     continue
-                    
+
                 is_main = False
                 if role == "main":
                     is_main = True
                 elif role == "auto":
                     is_main = info["same_app_focus"]
-                    
+
                 # A Background app ducks or pauses if Main is active
                 should_duck = False
                 if role == "background":
@@ -657,6 +714,10 @@ def monitor_loop():
 
                 if is_main:
                     target = manual_vol
+                    # If this was paused by us, resume it now that it's main
+                    if app_name in _paused_by_us:
+                        play_app_media(app_name)
+                        _paused_by_us.discard(app_name)
                 else:
                     if role == "background" and get_pause_background() and HAS_WINSDK:
                         target = manual_vol
@@ -668,10 +729,10 @@ def monitor_loop():
                         else:
                             if app_name in _paused_by_us:
                                 play_app_media(app_name)
-                                _paused_by_us.remove(app_name)
+                                _paused_by_us.discard(app_name)
                     else:
                         target = manual_vol * ducking_level if should_duck else manual_vol
-                    
+
                 start_fade(session, session_key, target)
 
             except Exception:
@@ -735,7 +796,6 @@ def make_icon(active=True, frame=0):
     for i, h in enumerate(heights):
         x = _bar_x_start + i * (_BAR_WIDTH + _BAR_GAP)
         y_top = _BAR_Y_BOTTOM - h
-        # Rounded bars via small circles on top and bottom
         r = _BAR_WIDTH // 2
         draw.rounded_rectangle(
             [x, y_top, x + _BAR_WIDTH, _BAR_Y_BOTTOM],
@@ -763,17 +823,18 @@ _mixer_window = None
 
 
 def open_mixer(icon, item):
-    """Open the mixer GUI window."""
+    """Open the mixer GUI window (thread-safe, single instance)."""
     global _mixer_window
-    try:
-        from mixer_gui import MixerWindow
-        if _mixer_window is None or not _mixer_window.is_open():
-            _mixer_window = MixerWindow()
-            _mixer_window.show()
-        else:
-            _mixer_window.close()
-    except Exception as e:
-        log.debug(f"Mixer error: {e}")
+    with _mixer_lock:
+        try:
+            from mixer_gui import MixerWindow
+            if _mixer_window is None or not _mixer_window.is_open():
+                _mixer_window = MixerWindow()
+                _mixer_window.show()
+            else:
+                _mixer_window.close()
+        except Exception as e:
+            log.debug(f"Mixer error: {e}")
 
 
 def toggle(icon, item):
@@ -781,7 +842,7 @@ def toggle(icon, item):
     enabled = not enabled
 
     if not enabled:
-        restore_all_volumes()
+        restore_all_volumes_and_resume()
 
     _refresh_requested.set()
     icon.icon = make_icon(enabled)
@@ -790,7 +851,7 @@ def toggle(icon, item):
 
 def quit_app(icon, item):
     _icon_anim_stop.set()
-    restore_all_volumes()
+    restore_all_volumes_and_resume()
     icon.stop()
     sys.exit(0)
 
@@ -823,18 +884,18 @@ def run_update(download_url):
     try:
         temp_dir = tempfile.gettempdir()
         new_exe_path = os.path.join(temp_dir, "FocusAudio_update.exe")
-        
+
         log.debug("Downloading update...")
         urllib.request.urlretrieve(download_url, new_exe_path)
-        
+
         current_exe = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
-        
+
         if not getattr(sys, 'frozen', False):
             log.info("Not running as compiled exe, skipping auto-update overwrite.")
             return
 
         bat_path = os.path.join(temp_dir, "update_focusaudio.bat")
-        
+
         bat_content = f"""@echo off
 timeout /t 2 /nobreak > NUL
 move /y "{new_exe_path}" "{current_exe}"
@@ -843,9 +904,9 @@ del "%~f0"
 """
         with open(bat_path, "w") as f:
             f.write(bat_content)
-            
+
         subprocess.Popen([bat_path], shell=True, creationflags=subprocess.CREATE_NO_WINDOW)
-        
+
         # Terminate current app to allow overwrite
         os._exit(0)
     except Exception as e:
@@ -858,16 +919,16 @@ def check_for_updates():
         req = urllib.request.Request(url, headers={'User-Agent': 'FocusAudio-Updater'})
         with urllib.request.urlopen(req, timeout=5) as response:
             data = json.loads(response.read().decode())
-            
+
         latest_tag = data.get("tag_name", "").lstrip('v')
         assets = data.get("assets", [])
-        
+
         download_url = None
         for asset in assets:
             if asset.get("name", "").lower() == "focusaudio.exe":
                 download_url = asset.get("browser_download_url")
                 break
-                
+
         if latest_tag and latest_tag != VERSION and download_url:
             import ctypes
             MB_YESNO = 0x04
@@ -875,14 +936,14 @@ def check_for_updates():
             MB_SYSTEMMODAL = 0x1000
             IDYES = 6
             result = ctypes.windll.user32.MessageBoxW(
-                0, 
-                f"A new version of FocusAudio (v{latest_tag}) is available!\\n\\nWould you like to download and install it now?", 
-                "FocusAudio Update", 
+                0,
+                f"A new version of FocusAudio (v{latest_tag}) is available!\n\nWould you like to download and install it now?",
+                "FocusAudio Update",
                 MB_YESNO | MB_ICONQUESTION | MB_SYSTEMMODAL
             )
             if result == IDYES:
                 run_update(download_url)
-                
+
     except Exception as e:
         log.info(f"Update check failed: {e}")
 
@@ -892,7 +953,7 @@ def check_for_updates():
 if __name__ == "__main__":
     import sys
     sys.modules["focus_audio"] = sys.modules["__main__"]
-    
+
     load_config()
 
     print("FocusAudio starting...")
@@ -918,4 +979,4 @@ if __name__ == "__main__":
                 time.sleep(1)
         except KeyboardInterrupt:
             print("Restoring volumes and quitting...")
-            restore_all_volumes()
+            restore_all_volumes_and_resume()
