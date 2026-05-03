@@ -241,7 +241,7 @@ class MixerWindow:
     """Dark-themed popup mixer window with per-app volume controls."""
 
     WIN_W = 380
-    WIN_H = 520
+    WIN_H = 580
 
     def __init__(self):
         self._root = None
@@ -353,11 +353,11 @@ class MixerWindow:
         # ── Media card ──
         self._build_media_card(inner)
 
-        # ── Scrollable session area ──
-        self._build_session_area(inner)
-
-        # ── Footer ──
+        # ── Footer (packed BEFORE session area so it is always visible) ──
         self._build_footer(inner)
+
+        # ── Scrollable session area (takes remaining space) ──
+        self._build_session_area(inner)
 
     def _draw_accent_line(self, canvas):
         w = canvas.winfo_width()
@@ -563,7 +563,37 @@ class MixerWindow:
         pause_text.pack(side="left")
         pause_text.bind("<Button-1>", lambda e: _on_pause_toggle())
 
-        # Ducking row
+        # ── Pause after fade toggle ──
+        paf_val = focus_audio.get_pause_after_fade()
+
+        paf_row = tk.Frame(footer, bg=COLORS["bg"])
+        paf_row.pack(fill="x", pady=(0, 8))
+
+        def _on_paf_toggle():
+            new_val = not focus_audio.get_pause_after_fade()
+            focus_audio.set_pause_after_fade(new_val)
+            icon = "■" if new_val else "□"
+            color = COLORS["accent_light"] if new_val else COLORS["text_muted"]
+            paf_icon_lbl.config(text=icon, fg=color)
+
+        paf_icon_lbl = tk.Label(
+            paf_row, text="■" if paf_val else "□",
+            font=(FONT, 10), bg=COLORS["bg"],
+            fg=COLORS["accent_light"] if paf_val else COLORS["text_muted"],
+            cursor="hand2"
+        )
+        paf_icon_lbl.pack(side="left")
+        paf_icon_lbl.bind("<Button-1>", lambda e: _on_paf_toggle())
+
+        paf_text = tk.Label(
+            paf_row, text="  Fade then pause (no skipping)",
+            font=(FONT, 9), bg=COLORS["bg"], fg=COLORS["text_secondary"],
+            cursor="hand2", anchor="w"
+        )
+        paf_text.pack(side="left")
+        paf_text.bind("<Button-1>", lambda e: _on_paf_toggle())
+
+        # ── Ducking volume row ──
         duck_row = tk.Frame(footer, bg=COLORS["bg"])
         duck_row.pack(fill="x")
 
@@ -585,7 +615,7 @@ class MixerWindow:
             width=self.WIN_W - 48,
             on_change=self._on_duck_change,
         )
-        self._duck_bar.pack(fill="x", pady=(6, 0))
+        self._duck_bar.pack(fill="x", pady=(4, 0))
 
     # ── Toggle ─────────────────────────────────────────────────────────────────
 
@@ -652,16 +682,17 @@ class MixerWindow:
         except Exception:
             pass
 
-        # Refresh media flyout
+        # Refresh media flyout — try SMTC first, fall back to active audio session
         try:
             media_info = focus_audio.get_current_media_info()
             if media_info and media_info.get("title"):
+                # ── SMTC gave us proper track info (Spotify, Windows Media Player, etc.) ──
                 self._song_title_label.config(text=media_info["title"])
                 artist = media_info.get("artist") or media_info.get("app") or "Unknown"
                 self._artist_label.config(text=artist)
 
-                is_playing = media_info.get("status") == 4
-                self._play_btn.config(text="⏸" if is_playing else "▶")
+                is_playing_now = media_info.get("status") == 4
+                self._play_btn.config(text="⏸" if is_playing_now else "▶")
 
                 thumb = media_info.get("thumbnail_bytes")
                 if thumb and thumb != self._current_thumb_bytes:
@@ -671,11 +702,21 @@ class MixerWindow:
                         self._tk_thumb = new_img
                         self._album_art_label.config(image=self._tk_thumb, width=52)
             else:
-                self._song_title_label.config(text="No media playing")
-                self._artist_label.config(text="—")
-                self._play_btn.config(text="▶")
-                self._album_art_label.config(image="", width=0)
-                self._current_thumb_bytes = None
+                # ── Fallback: show whichever audio session is currently active ──
+                # Covers Chrome, SimplyMusic, and any app not registered with SMTC.
+                fallback = focus_audio.get_active_session_fallback()
+                if fallback:
+                    self._song_title_label.config(text=fallback["title"])
+                    self._artist_label.config(text=fallback["artist"])
+                    self._play_btn.config(text="▶")
+                    self._album_art_label.config(image="", width=0)
+                    self._current_thumb_bytes = None
+                else:
+                    self._song_title_label.config(text="No media playing")
+                    self._artist_label.config(text="—")
+                    self._play_btn.config(text="▶")
+                    self._album_art_label.config(image="", width=0)
+                    self._current_thumb_bytes = None
         except Exception:
             pass
 

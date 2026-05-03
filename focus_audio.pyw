@@ -131,6 +131,14 @@ def set_pause_background(enabled):
     _global_config["pause_background"] = bool(enabled)
     save_config()
 
+def get_pause_after_fade():
+    """Fade to silence first, then pause playback so the track doesn't skip."""
+    return _global_config.get("pause_after_fade", False)
+
+def set_pause_after_fade(enabled):
+    _global_config["pause_after_fade"] = bool(enabled)
+    save_config()
+
 def get_app_config(app_name):
     """Get per-app config, creating defaults if needed."""
     if app_name not in _app_config:
@@ -360,12 +368,18 @@ def get_session_volume(session):
         return 1.0
 
 
-def fade_session(session, session_key, target_vol, token, steps=FADE_STEPS, duration=FADE_DURATION):
+def fade_session(session, session_key, target_vol, token,
+                 steps=FADE_STEPS, duration=FADE_DURATION, post_complete_fn=None):
+    _completed = False
     try:
         steps = max(1, int(steps))
         duration = max(0.0, float(duration))
         start_vol = get_session_volume(session)
         if abs(start_vol - target_vol) < 0.01:
+            # Already at target — still counts as "completed" for post-fade actions
+            with _lock:
+                if _fade_tokens.get(session_key) == token:
+                    _completed = True
             return
 
         step_size = (target_vol - start_vol) / steps
@@ -383,21 +397,28 @@ def fade_session(session, session_key, target_vol, token, steps=FADE_STEPS, dura
             if _fade_tokens.get(session_key) != token:
                 return
         set_session_volume(session, target_vol)
+        # Fade reached its target without being superseded
+        with _lock:
+            if _fade_tokens.get(session_key) == token:
+                _completed = True
     finally:
         with _lock:
             if token in _active_fades:
                 _active_fades.remove(token)
+        if _completed and post_complete_fn:
+            try:
+                post_complete_fn()
+            except Exception:
+                pass
 
 
-def start_fade(session, session_key, target_vol):
+def start_fade(session, session_key, target_vol, post_complete_fn=None):
     global _global_token_counter
     target_vol = max(0.0, min(1.0, float(target_vol)))
 
     with _lock:
         previous_target = _session_targets.get(session_key)
-        # BUG FIX: only skip if a fade to this exact target is already in
-        # progress (token still active). A stale target with no active fade
-        # must NOT suppress a new fade — the session may have restarted.
+        # Only skip if a fade to this exact target is already actively running.
         current_token = _fade_tokens.get(session_key)
         fade_in_progress = current_token is not None and current_token in _active_fades
         if fade_in_progress and previous_target is not None and abs(previous_target - target_vol) < 0.01:
@@ -412,6 +433,7 @@ def start_fade(session, session_key, target_vol):
     threading.Thread(
         target=fade_session,
         args=(session, session_key, target_vol, token),
+        kwargs={"post_complete_fn": post_complete_fn},
         daemon=True,
     ).start()
 
@@ -452,16 +474,37 @@ def restore_all_volumes():
 def restore_all_volumes_and_resume():
     """Restore volumes AND resume any media apps we paused. Used on disable."""
     restore_all_volumes()
-    if HAS_WINSDK and _paused_by_us_ref:
-        for app_name in list(_paused_by_us_ref):
+    if HAS_WINSDK:
+        for app_name in list(_paused_by_us_ref) | list(_paused_after_fade_ref):
             try:
                 play_app_media(app_name)
             except Exception:
                 pass
         _paused_by_us_ref.clear()
+        _paused_after_fade_ref.clear()
 
-# Shared reference to the _paused_by_us set so restore can drain it
+# Shared sets so restore/disable can drain them from outside the monitor thread
 _paused_by_us_ref = set()
+_paused_after_fade_ref = set()
+
+
+def get_active_session_fallback():
+    """Return {title, artist} for the most active audio session.
+    Used as a fallback in the media card when SMTC (winsdk) is unavailable
+    or when the app (e.g. Chrome, SimplyMusic) isn't registered with SMTC."""
+    with _lock:
+        sessions = list(_current_sessions)
+    if not sessions:
+        return None
+    active = [s for s in sessions if s.get("active")]
+    if not active:
+        return None
+    focused = [s for s in active if s.get("focused")]
+    best = focused[0] if focused else active[0]
+    title = best["name"].replace("_", " ").title()
+    display = (best.get("display") or "").strip()
+    artist = display if display else "Playing audio"
+    return {"title": title, "artist": artist}
 
 
 # ── SMTC Media Manager ───────────────────────────────────────────────────────
@@ -571,9 +614,10 @@ def media_prev():
 # ── Monitor Loop ─────────────────────────────────────────────────────────────
 
 def monitor_loop():
-    global _current_sessions, _paused_by_us_ref
+    global _current_sessions, _paused_by_us_ref, _paused_after_fade_ref
     _init_media_manager()
-    _paused_by_us = _paused_by_us_ref  # shared reference
+    _paused_by_us = _paused_by_us_ref          # shared reference for instant-pause mode
+    _paused_after_fade = _paused_after_fade_ref # shared reference for fade-then-pause mode
 
     # COM must be initialized on each thread that uses Windows audio APIs.
     import comtypes
@@ -713,14 +757,18 @@ def monitor_loop():
                     should_duck = main_is_active
 
                 if is_main:
-                    target = manual_vol
-                    # If this was paused by us, resume it now that it's main
+                    # Resume if we had paused this app by either method
                     if app_name in _paused_by_us:
                         play_app_media(app_name)
                         _paused_by_us.discard(app_name)
+                    if app_name in _paused_after_fade:
+                        play_app_media(app_name)
+                        _paused_after_fade.discard(app_name)
+                    start_fade(session, session_key, manual_vol)
+
                 else:
                     if role == "background" and get_pause_background() and HAS_WINSDK:
-                        target = manual_vol
+                        # ── Mode 1: Instant pause ──
                         if should_duck:
                             if app_name not in _paused_by_us:
                                 if is_playing(app_name):
@@ -730,10 +778,31 @@ def monitor_loop():
                             if app_name in _paused_by_us:
                                 play_app_media(app_name)
                                 _paused_by_us.discard(app_name)
-                    else:
-                        target = manual_vol * ducking_level if should_duck else manual_vol
+                        start_fade(session, session_key, manual_vol)
 
-                start_fade(session, session_key, target)
+                    elif get_pause_after_fade() and HAS_WINSDK:
+                        # ── Mode 2: Fade to silence, then pause ──
+                        if should_duck:
+                            if app_name not in _paused_after_fade:
+                                # Arm the pause: add to set now so we don't re-trigger,
+                                # then fade to 0 and pause via post_complete_fn.
+                                _paused_after_fade.add(app_name)
+                                start_fade(session, session_key, 0.0,
+                                           post_complete_fn=lambda n=app_name: pause_app_media(n))
+                            # else: already fading/paused — leave it alone
+                        else:
+                            if app_name in _paused_after_fade:
+                                # Un-duck: resume playback, then fade back up
+                                play_app_media(app_name)
+                                _paused_after_fade.discard(app_name)
+                                start_fade(session, session_key, manual_vol)
+                            else:
+                                start_fade(session, session_key, manual_vol)
+
+                    else:
+                        # ── Mode 3: Volume ducking only ──
+                        target = manual_vol * ducking_level if should_duck else manual_vol
+                        start_fade(session, session_key, target)
 
             except Exception:
                 continue
