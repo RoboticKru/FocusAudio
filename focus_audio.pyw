@@ -19,6 +19,8 @@ import urllib.request
 import tempfile
 import subprocess
 import asyncio
+import zipfile
+import shutil
 
 try:
     from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
@@ -26,7 +28,7 @@ try:
 except ImportError:
     HAS_WINSDK = False
 
-VERSION = "2.2.0"
+VERSION = "2.2.1"
 REPO_OWNER = "RoboticKru"
 REPO_NAME = "FocusAudio"
 
@@ -1068,15 +1070,43 @@ def run_update(download_url):
     try:
         temp_dir = tempfile.gettempdir()
         new_exe_path = os.path.join(temp_dir, "FocusAudio_update.exe")
+        new_zip_path = os.path.join(temp_dir, "FocusAudio_update.zip")
 
         log.debug("Downloading update...")
-        urllib.request.urlretrieve(download_url, new_exe_path)
+        if download_url.lower().endswith(".zip"):
+            urllib.request.urlretrieve(download_url, new_zip_path)
+        else:
+            urllib.request.urlretrieve(download_url, new_exe_path)
 
         current_exe = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
 
         if not getattr(sys, 'frozen', False):
             log.info("Not running as compiled exe, skipping auto-update overwrite.")
             return
+
+        if download_url.lower().endswith(".zip"):
+            extract_dir = os.path.join(temp_dir, "FocusAudio_update")
+            if os.path.isdir(extract_dir):
+                shutil.rmtree(extract_dir, ignore_errors=True)
+
+            os.makedirs(extract_dir, exist_ok=True)
+            with zipfile.ZipFile(new_zip_path, "r") as zf:
+                zf.extractall(extract_dir)
+
+            exe_candidates = []
+            for root, _, files in os.walk(extract_dir):
+                for name in files:
+                    if name.lower().endswith(".exe"):
+                        exe_candidates.append(os.path.join(root, name))
+
+            if not exe_candidates:
+                log.error("Update ZIP did not contain an EXE.")
+                return
+
+            # Prefer a FocusAudio exe if present, otherwise take the first exe.
+            preferred = [p for p in exe_candidates if os.path.basename(p).lower().startswith("focusaudio")]
+            selected_exe = preferred[0] if preferred else exe_candidates[0]
+            shutil.copy2(selected_exe, new_exe_path)
 
         bat_path = os.path.join(temp_dir, "update_focusaudio.bat")
 
@@ -1109,9 +1139,16 @@ def check_for_updates():
 
         download_url = None
         for asset in assets:
-            if asset.get("name", "").lower() == "focusaudio.exe":
+            name = asset.get("name", "").lower()
+            if name.endswith(".zip"):
                 download_url = asset.get("browser_download_url")
                 break
+
+        if not download_url:
+            for asset in assets:
+                if asset.get("name", "").lower() == "focusaudio.exe":
+                    download_url = asset.get("browser_download_url")
+                    break
 
         if latest_tag and latest_tag != VERSION and download_url:
             import ctypes
