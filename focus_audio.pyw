@@ -23,12 +23,20 @@ import zipfile
 import shutil
 
 try:
+    import winreg
+    HAS_WINREG = True
+except ImportError:
+    winreg = None
+    HAS_WINREG = False
+
+try:
     from winrt.windows.media.control import GlobalSystemMediaTransportControlsSessionManager
     HAS_WINSDK = True
 except ImportError:
     HAS_WINSDK = False
 
-VERSION = "2.2.1"
+VERSION = "2.2.2"
+APP_NAME = "FocusAudio"
 REPO_OWNER = "RoboticKru"
 REPO_NAME = "FocusAudio"
 
@@ -141,6 +149,58 @@ def set_pause_after_fade(enabled):
     _global_config["pause_after_fade"] = bool(enabled)
     save_config()
 
+def get_launch_on_startup():
+    return _global_config.get("launch_on_startup", False)
+
+def set_launch_on_startup(enabled):
+    _global_config["launch_on_startup"] = bool(enabled)
+    save_config()
+    apply_startup_registration(bool(enabled))
+
+def get_startup_command():
+    if getattr(sys, "frozen", False):
+        return f'"{sys.executable}"'
+
+    python_exe = sys.executable
+    if python_exe.lower().endswith("python.exe"):
+        pythonw_exe = python_exe[:-10] + "pythonw.exe"
+        if os.path.exists(pythonw_exe):
+            python_exe = pythonw_exe
+
+    script_path = os.path.abspath(__file__)
+    return f'"{python_exe}" "{script_path}"'
+
+def apply_startup_registration(enabled):
+    if not HAS_WINREG:
+        return
+
+    run_key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key_path, 0, winreg.KEY_SET_VALUE) as key:
+            if enabled:
+                winreg.SetValueEx(key, APP_NAME, 0, winreg.REG_SZ, get_startup_command())
+            else:
+                try:
+                    winreg.DeleteValue(key, APP_NAME)
+                except FileNotFoundError:
+                    pass
+    except Exception:
+        pass
+
+def sync_startup_setting_from_registry():
+    if not HAS_WINREG:
+        return False
+
+    run_key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    try:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key_path, 0, winreg.KEY_READ) as key:
+            winreg.QueryValueEx(key, APP_NAME)
+            return True
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
 def get_app_config(app_name):
     """Get per-app config, creating defaults if needed."""
     if app_name not in _app_config:
@@ -237,6 +297,17 @@ def get_session_display_name(session):
         return (session.DisplayName or "").strip().lower()
     except Exception:
         return ""
+
+
+def get_resource_path(filename):
+    base_path = getattr(sys, "_MEIPASS", None) if getattr(sys, "frozen", False) else None
+    if base_path:
+        candidate = os.path.join(base_path, filename)
+        if os.path.exists(candidate):
+            return candidate
+
+    candidate = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+    return candidate if os.path.exists(candidate) else None
 
 
 # ── Friendly process-name lookup ─────────────────────────────────────────────
@@ -537,7 +608,7 @@ def restore_all_volumes_and_resume():
     """Restore volumes AND resume any media apps we paused. Used on disable."""
     restore_all_volumes()
     if HAS_WINSDK:
-        for app_name in list(_paused_by_us_ref) | list(_paused_after_fade_ref):
+        for app_name in set(_paused_by_us_ref) | set(_paused_after_fade_ref):
             try:
                 play_app_media(app_name)
             except Exception:
@@ -573,16 +644,29 @@ def get_active_session_fallback():
 _media_manager = None
 _media_loop = None
 
+
+async def _await_media_awaitable(awaitable):
+    return await awaitable
+
+
+def _run_media_awaitable(awaitable, timeout=1.0):
+    if not _media_loop:
+        return None
+    future = asyncio.run_coroutine_threadsafe(
+        _await_media_awaitable(awaitable),
+        _media_loop,
+    )
+    return future.result(timeout=timeout)
+
 def _init_media_manager():
     global _media_manager, _media_loop
     if not HAS_WINSDK: return
     _media_loop = asyncio.new_event_loop()
     threading.Thread(target=_media_loop.run_forever, daemon=True).start()
     try:
-        _media_manager = asyncio.run_coroutine_threadsafe(
-            GlobalSystemMediaTransportControlsSessionManager.request_async(),
-            _media_loop
-        ).result()
+        _media_manager = _run_media_awaitable(
+            GlobalSystemMediaTransportControlsSessionManager.request_async()
+        )
     except Exception as e:
         log.error(f"Failed to init media manager: {e}")
 
@@ -610,19 +694,27 @@ def pause_app_media(app_name):
     """Pause app via SMTC if registered, otherwise simulate the media Play/Pause key."""
     session = _get_media_session(app_name)
     if session and _media_loop:
-        asyncio.run_coroutine_threadsafe(session.try_pause_async(), _media_loop)
-    else:
-        # Chrome, SimplyMusic etc. don't register SMTC sessions.
-        # Sending the global media key is the only reliable way to reach them.
-        _send_media_key(_VK_MEDIA_PLAY_PAUSE)
+        try:
+            _run_media_awaitable(session.try_pause_async())
+            return
+        except Exception as e:
+            log.debug(f"pause_app_media SMTC failed for {app_name}: {e}")
+
+    # Chrome, SimplyMusic etc. don't register SMTC sessions.
+    # Sending the global media key is the only reliable way to reach them.
+    _send_media_key(_VK_MEDIA_PLAY_PAUSE)
 
 def play_app_media(app_name):
     """Resume app via SMTC if registered, otherwise simulate the media Play/Pause key."""
     session = _get_media_session(app_name)
     if session and _media_loop:
-        asyncio.run_coroutine_threadsafe(session.try_play_async(), _media_loop)
-    else:
-        _send_media_key(_VK_MEDIA_PLAY_PAUSE)
+        try:
+            _run_media_awaitable(session.try_play_async())
+            return
+        except Exception as e:
+            log.debug(f"play_app_media SMTC failed for {app_name}: {e}")
+
+    _send_media_key(_VK_MEDIA_PLAY_PAUSE)
 
 def get_current_media_info():
     """Returns a dict with title, artist, status, thumbnail_bytes, and source_app."""
@@ -631,8 +723,7 @@ def get_current_media_info():
         session = _media_manager.get_current_session()
         if not session: return None
 
-        future = asyncio.run_coroutine_threadsafe(session.try_get_media_properties_async(), _media_loop)
-        props = future.result(timeout=1.0)
+        props = _run_media_awaitable(session.try_get_media_properties_async())
 
         info = session.get_playback_info()
         status = info.playback_status if info else 0
@@ -647,8 +738,7 @@ def get_current_media_info():
                     await stream.read_async(buf, stream.size, InputStreamOptions.NONE)
                     return memoryview(buf).tobytes()
 
-                thumb_future = asyncio.run_coroutine_threadsafe(fetch_thumb(), _media_loop)
-                thumb_bytes = thumb_future.result(timeout=1.0)
+                thumb_bytes = _run_media_awaitable(fetch_thumb())
             except Exception as e:
                 log.debug(f"Failed to read thumbnail: {e}")
 
@@ -688,8 +778,7 @@ def media_play_pause():
         try:
             session = _media_manager.get_current_session()
             if session:
-                asyncio.run_coroutine_threadsafe(
-                    session.try_toggle_play_pause_async(), _media_loop)
+                _run_media_awaitable(session.try_toggle_play_pause_async())
                 sent = True
         except Exception:
             pass
@@ -704,8 +793,7 @@ def media_next():
         try:
             session = _media_manager.get_current_session()
             if session:
-                asyncio.run_coroutine_threadsafe(
-                    session.try_skip_next_async(), _media_loop)
+                _run_media_awaitable(session.try_skip_next_async())
                 sent = True
         except Exception:
             pass
@@ -720,8 +808,7 @@ def media_prev():
         try:
             session = _media_manager.get_current_session()
             if session:
-                asyncio.run_coroutine_threadsafe(
-                    session.try_skip_previous_async(), _media_loop)
+                _run_media_awaitable(session.try_skip_previous_async())
                 sent = True
         except Exception:
             pass
@@ -1176,6 +1263,7 @@ if __name__ == "__main__":
     sys.modules["focus_audio"] = sys.modules["__main__"]
 
     load_config()
+    apply_startup_registration(get_launch_on_startup())
 
     print("FocusAudio starting...")
     print(f"  Fade duration : {FADE_DURATION}s")

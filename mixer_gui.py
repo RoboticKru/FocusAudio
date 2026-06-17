@@ -279,6 +279,13 @@ class MixerWindow:
         self._root.attributes("-topmost", True)
         self._root.overrideredirect(True)
 
+        try:
+            icon_path = focus_audio.get_resource_path("focusaudio.ico")
+            if icon_path:
+                self._root.iconbitmap(default=icon_path)
+        except Exception:
+            pass
+
         self._open = True
 
         # Position near system tray (bottom-right)
@@ -574,6 +581,41 @@ class MixerWindow:
         )
         paf_text.pack(side="left")
         paf_text.bind("<Button-1>", lambda e: _on_paf_toggle())
+
+        # ── Launch on startup toggle ──
+        startup_val = focus_audio.get_launch_on_startup()
+        self._startup_var = tk.BooleanVar(value=startup_val)
+
+        startup_row = tk.Frame(footer, bg=COLORS["bg"])
+        startup_row.pack(fill="x", pady=(0, 8))
+
+        def _on_startup_toggle():
+            new_val = not focus_audio.get_launch_on_startup()
+            focus_audio.set_launch_on_startup(new_val)
+            self._startup_var.set(new_val)
+            _update_startup_btn(new_val)
+
+        def _update_startup_btn(val):
+            icon = "■" if val else "□"
+            color = COLORS["accent_light"] if val else COLORS["text_muted"]
+            startup_icon_lbl.config(text=icon, fg=color)
+
+        startup_icon_lbl = tk.Label(
+            startup_row, text="■" if startup_val else "□",
+            font=(FONT, 10), bg=COLORS["bg"],
+            fg=COLORS["accent_light"] if startup_val else COLORS["text_muted"],
+            cursor="hand2"
+        )
+        startup_icon_lbl.pack(side="left")
+        startup_icon_lbl.bind("<Button-1>", lambda e: _on_startup_toggle())
+
+        startup_text = tk.Label(
+            startup_row, text="  Launch on startup",
+            font=(FONT, 9), bg=COLORS["bg"], fg=COLORS["text_secondary"],
+            cursor="hand2", anchor="w"
+        )
+        startup_text.pack(side="left")
+        startup_text.bind("<Button-1>", lambda e: _on_startup_toggle())
 
         # ── Ducking volume row ──
         duck_row = tk.Frame(footer, bg=COLORS["bg"])

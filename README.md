@@ -28,10 +28,9 @@ FocusAudio dynamically manages your Windows audio so only the focused applicatio
 
 ### Quick Start
 1. Download **`FocusAudio.exe`** from the [latest release](https://github.com/RoboticKru/FocusAudio/releases).
-2. Double-click to run. It launches silently into your system tray.
-3. That's it! Switch between apps and hear the magic.
-
-> **💡 Tip:** To run on startup, create a shortcut to `FocusAudio.exe`, press `Win + R`, type `shell:startup`, and drop the shortcut there.
+2. Double-click to run. It launches silently into your system tray with the branded FocusAudio icon.
+3. Open the mixer popup and enable **Launch on startup** if you want it to start automatically with Windows.
+4. That's it! Switch between apps and hear the magic.
 
 ### From Source
 ```bash
@@ -49,6 +48,7 @@ Edit the top of `focus_audio.pyw` to customise behaviour:
 FADE_DURATION  = 1.2    # seconds for the fade effect
 POLL_INTERVAL  = 0.15   # how often to check focus (seconds)
 WHITELIST      = set()  # e.g. {"spotify", "discord"} — never mute these
+# Launch on startup is controlled from the mixer UI
 ```
 
 ## 🎯 Use Case
