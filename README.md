@@ -22,14 +22,15 @@ FocusAudio dynamically manages your Windows audio so only the focused applicatio
 | 🌐 **Multi-Browser** | Handles Chrome, Edge, Firefox, Brave, Opera, and Vivaldi — matching sessions to active tabs |
 | 🛡️ **Whitelist** | Mark apps like Discord or Spotify to never be muted |
 | 📌 **System Tray** | Runs silently with an animated equalizer icon. Toggle on/off with a right-click |
+| 🚀 **Auto Start** | Installs itself to a stable local app folder and starts automatically with Windows |
 | ⚡ **Lightweight** | Single portable `.exe`. No installation, no services, no internet required |
 
 ## 📥 Installation
 
 ### Quick Start
 1. Download **`FocusAudio.exe`** from the [latest release](https://github.com/RoboticKru/FocusAudio/releases).
-2. Double-click to run. It launches silently into your system tray with the branded FocusAudio icon.
-3. Open the mixer popup and enable **Launch on startup** if you want it to start automatically with Windows.
+2. Double-click to run. The first launch copies FocusAudio into a stable local app folder, then relaunches from there.
+3. After that, it starts automatically with Windows.
 4. That's it! Switch between apps and hear the magic.
 
 ### From Source
@@ -48,7 +49,7 @@ Edit the top of `focus_audio.pyw` to customise behaviour:
 FADE_DURATION  = 1.2    # seconds for the fade effect
 POLL_INTERVAL  = 0.15   # how often to check focus (seconds)
 WHITELIST      = set()  # e.g. {"spotify", "discord"} — never mute these
-# Launch on startup is controlled from the mixer UI
+# Startup is automatic; the app registers itself on first launch
 ```
 
 ## 🎯 Use Case

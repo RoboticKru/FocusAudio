@@ -35,7 +35,7 @@ try:
 except ImportError:
     HAS_WINSDK = False
 
-VERSION = "2.2.2"
+VERSION = "2.2.3"
 APP_NAME = "FocusAudio"
 REPO_OWNER = "RoboticKru"
 REPO_NAME = "FocusAudio"
@@ -150,14 +150,23 @@ def set_pause_after_fade(enabled):
     save_config()
 
 def get_launch_on_startup():
-    return _global_config.get("launch_on_startup", False)
+    return _global_config.get("launch_on_startup", True)
 
 def set_launch_on_startup(enabled):
     _global_config["launch_on_startup"] = bool(enabled)
     save_config()
     apply_startup_registration(bool(enabled))
 
+def ensure_startup_default():
+    if "launch_on_startup" not in _global_config:
+        _global_config["launch_on_startup"] = True
+        save_config()
+
 def get_startup_command():
+    installed_exe = get_installed_exe_path()
+    if installed_exe and os.path.exists(installed_exe):
+        return f'"{installed_exe}"'
+
     if getattr(sys, "frozen", False):
         return f'"{sys.executable}"'
 
@@ -199,6 +208,40 @@ def sync_startup_setting_from_registry():
     except FileNotFoundError:
         return False
     except Exception:
+        return False
+
+def get_installed_app_dir():
+    local_appdata = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    return os.path.join(local_appdata, APP_NAME)
+
+def get_installed_exe_path():
+    return os.path.join(get_installed_app_dir(), f"{APP_NAME}.exe")
+
+def self_install_if_needed():
+    """Move a frozen build into a stable local app folder and restart from there.
+    This avoids running from Downloads, which tends to trigger SmartScreen repeatedly."""
+    if not getattr(sys, "frozen", False):
+        return False
+
+    try:
+        current_exe = os.path.abspath(sys.executable)
+        installed_exe = os.path.abspath(get_installed_exe_path())
+
+        if current_exe.lower() == installed_exe.lower():
+            return False
+
+        os.makedirs(os.path.dirname(installed_exe), exist_ok=True)
+        shutil.copy2(current_exe, installed_exe)
+        apply_startup_registration(True)
+
+        try:
+            subprocess.Popen([installed_exe], close_fds=True)
+        except Exception:
+            os.startfile(installed_exe)
+
+        os._exit(0)
+    except Exception as e:
+        log.debug(f"self_install_if_needed failed: {e}")
         return False
 
 def get_app_config(app_name):
@@ -1263,7 +1306,9 @@ if __name__ == "__main__":
     sys.modules["focus_audio"] = sys.modules["__main__"]
 
     load_config()
-    apply_startup_registration(get_launch_on_startup())
+    ensure_startup_default()
+    set_launch_on_startup(True)
+    self_install_if_needed()
 
     print("FocusAudio starting...")
     print(f"  Fade duration : {FADE_DURATION}s")

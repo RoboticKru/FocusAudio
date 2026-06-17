@@ -241,7 +241,7 @@ class MixerWindow:
     """Dark-themed popup mixer window with per-app volume controls."""
 
     WIN_W = 380
-    WIN_H = 580
+    WIN_H = 460
 
     def __init__(self):
         self._root = None
@@ -478,37 +478,10 @@ class MixerWindow:
         spacer.pack(fill="x")
 
         container = tk.Frame(parent, bg=COLORS["bg"])
-        container.pack(fill="both", expand=True)
+        container.pack(fill="both", expand=True, padx=0, pady=(0, 8))
 
-        self._canvas = tk.Canvas(
-            container, bg=COLORS["bg"], highlightthickness=0, bd=0
-        )
-        scrollbar = tk.Scrollbar(
-            container, orient="vertical", command=self._canvas.yview,
-            bg=COLORS["bg"], troughcolor=COLORS["bg"],
-        )
-        self._session_frame = tk.Frame(self._canvas, bg=COLORS["bg"])
-
-        self._session_frame.bind(
-            "<Configure>",
-            lambda e: self._canvas.configure(scrollregion=self._canvas.bbox("all"))
-        )
-
-        self._canvas.create_window(
-            (0, 0), window=self._session_frame, anchor="nw", width=self.WIN_W - 4
-        )
-        self._canvas.configure(yscrollcommand=scrollbar.set)
-
-        self._canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-
-        self._canvas.bind_all("<MouseWheel>", self._on_mousewheel)
-
-    def _on_mousewheel(self, e):
-        try:
-            self._canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
-        except Exception:
-            pass
+        self._session_frame = tk.Frame(container, bg=COLORS["bg"])
+        self._session_frame.pack(fill="both", expand=True)
 
     def _build_footer(self, parent):
         sep = tk.Frame(parent, bg=COLORS["border"], height=1)
@@ -517,105 +490,15 @@ class MixerWindow:
         footer = tk.Frame(parent, bg=COLORS["bg"], padx=16, pady=10)
         footer.pack(fill="x")
 
-        # Pause background toggle
-        pause_val = focus_audio.get_pause_background()
-        self._pause_var = tk.BooleanVar(value=pause_val)
+        # Startup is now automatic and pause controls are intentionally removed.
+        status_row = tk.Frame(footer, bg=COLORS["bg"])
+        status_row.pack(fill="x", pady=(0, 8))
 
-        pause_row = tk.Frame(footer, bg=COLORS["bg"])
-        pause_row.pack(fill="x", pady=(0, 8))
-
-        def _on_pause_toggle():
-            new_val = not focus_audio.get_pause_background()
-            focus_audio.set_pause_background(new_val)
-            self._pause_var.set(new_val)
-            _update_pause_btn(new_val)
-
-        def _update_pause_btn(val):
-            icon = "■" if val else "□"
-            color = COLORS["accent_light"] if val else COLORS["text_muted"]
-            pause_icon_lbl.config(text=icon, fg=color)
-
-        pause_icon_lbl = tk.Label(
-            pause_row, text="■" if pause_val else "□",
-            font=(FONT, 10), bg=COLORS["bg"],
-            fg=COLORS["accent_light"] if pause_val else COLORS["text_muted"],
-            cursor="hand2"
-        )
-        pause_icon_lbl.pack(side="left")
-        pause_icon_lbl.bind("<Button-1>", lambda e: _on_pause_toggle())
-
-        pause_text = tk.Label(
-            pause_row, text="  Pause background apps",
+        tk.Label(
+            status_row, text="FocusAudio starts automatically with Windows",
             font=(FONT, 9), bg=COLORS["bg"], fg=COLORS["text_secondary"],
-            cursor="hand2", anchor="w"
-        )
-        pause_text.pack(side="left")
-        pause_text.bind("<Button-1>", lambda e: _on_pause_toggle())
-
-        # ── Pause after fade toggle ──
-        paf_val = focus_audio.get_pause_after_fade()
-
-        paf_row = tk.Frame(footer, bg=COLORS["bg"])
-        paf_row.pack(fill="x", pady=(0, 8))
-
-        def _on_paf_toggle():
-            new_val = not focus_audio.get_pause_after_fade()
-            focus_audio.set_pause_after_fade(new_val)
-            icon = "■" if new_val else "□"
-            color = COLORS["accent_light"] if new_val else COLORS["text_muted"]
-            paf_icon_lbl.config(text=icon, fg=color)
-
-        paf_icon_lbl = tk.Label(
-            paf_row, text="■" if paf_val else "□",
-            font=(FONT, 10), bg=COLORS["bg"],
-            fg=COLORS["accent_light"] if paf_val else COLORS["text_muted"],
-            cursor="hand2"
-        )
-        paf_icon_lbl.pack(side="left")
-        paf_icon_lbl.bind("<Button-1>", lambda e: _on_paf_toggle())
-
-        paf_text = tk.Label(
-            paf_row, text="  Fade then pause (no skipping)",
-            font=(FONT, 9), bg=COLORS["bg"], fg=COLORS["text_secondary"],
-            cursor="hand2", anchor="w"
-        )
-        paf_text.pack(side="left")
-        paf_text.bind("<Button-1>", lambda e: _on_paf_toggle())
-
-        # ── Launch on startup toggle ──
-        startup_val = focus_audio.get_launch_on_startup()
-        self._startup_var = tk.BooleanVar(value=startup_val)
-
-        startup_row = tk.Frame(footer, bg=COLORS["bg"])
-        startup_row.pack(fill="x", pady=(0, 8))
-
-        def _on_startup_toggle():
-            new_val = not focus_audio.get_launch_on_startup()
-            focus_audio.set_launch_on_startup(new_val)
-            self._startup_var.set(new_val)
-            _update_startup_btn(new_val)
-
-        def _update_startup_btn(val):
-            icon = "■" if val else "□"
-            color = COLORS["accent_light"] if val else COLORS["text_muted"]
-            startup_icon_lbl.config(text=icon, fg=color)
-
-        startup_icon_lbl = tk.Label(
-            startup_row, text="■" if startup_val else "□",
-            font=(FONT, 10), bg=COLORS["bg"],
-            fg=COLORS["accent_light"] if startup_val else COLORS["text_muted"],
-            cursor="hand2"
-        )
-        startup_icon_lbl.pack(side="left")
-        startup_icon_lbl.bind("<Button-1>", lambda e: _on_startup_toggle())
-
-        startup_text = tk.Label(
-            startup_row, text="  Launch on startup",
-            font=(FONT, 9), bg=COLORS["bg"], fg=COLORS["text_secondary"],
-            cursor="hand2", anchor="w"
-        )
-        startup_text.pack(side="left")
-        startup_text.bind("<Button-1>", lambda e: _on_startup_toggle())
+            anchor="w"
+        ).pack(side="left")
 
         # ── Ducking volume row ──
         duck_row = tk.Frame(footer, bg=COLORS["bg"])
