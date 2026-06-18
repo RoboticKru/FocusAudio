@@ -23,15 +23,16 @@ FocusAudio dynamically manages your Windows audio so only the focused applicatio
 | 🛡️ **Whitelist** | Mark apps like Discord or Spotify to never be muted |
 | 📌 **System Tray** | Runs silently with an animated equalizer icon. Toggle on/off with a right-click |
 | 🚀 **Auto Start** | Installs itself to a stable local app folder and starts automatically with Windows |
-| ⚡ **Lightweight** | Single portable `.exe`. No installation, no services, no internet required |
+| ⚡ **Lightweight** | Portable ZIP build. No installation, no services, no internet required |
 
 ## 📥 Installation
 
 ### Quick Start
-1. Download **`FocusAudio.exe`** from the [latest release](https://github.com/RoboticKru/FocusAudio/releases).
-2. Double-click to run. The first launch copies FocusAudio into a stable local app folder, then relaunches from there.
-3. After that, it starts automatically with Windows.
-4. That's it! Switch between apps and hear the magic.
+1. Download the **ZIP release** from the [latest release](https://github.com/RoboticKru/FocusAudio/releases).
+2. Extract it, then double-click **`FocusAudio.exe`** inside the folder.
+3. The first launch copies FocusAudio into a stable local app folder, then relaunches from there.
+4. After that, it starts automatically with Windows.
+5. That's it! Switch between apps and hear the magic.
 
 ### From Source
 ```bash

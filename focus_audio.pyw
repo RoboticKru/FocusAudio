@@ -35,7 +35,7 @@ try:
 except ImportError:
     HAS_WINSDK = False
 
-VERSION = "2.2.3"
+VERSION = "2.2.4"
 APP_NAME = "FocusAudio"
 REPO_OWNER = "RoboticKru"
 REPO_NAME = "FocusAudio"
@@ -217,6 +217,18 @@ def get_installed_app_dir():
 def get_installed_exe_path():
     return os.path.join(get_installed_app_dir(), f"{APP_NAME}.exe")
 
+
+def copy_tree_contents(source_dir, destination_dir):
+    os.makedirs(destination_dir, exist_ok=True)
+    for root, _, files in os.walk(source_dir):
+        rel_root = os.path.relpath(root, source_dir)
+        target_root = destination_dir if rel_root == "." else os.path.join(destination_dir, rel_root)
+        os.makedirs(target_root, exist_ok=True)
+        for filename in files:
+            source_path = os.path.join(root, filename)
+            target_path = os.path.join(target_root, filename)
+            shutil.copy2(source_path, target_path)
+
 def self_install_if_needed():
     """Move a frozen build into a stable local app folder and restart from there.
     This avoids running from Downloads, which tends to trigger SmartScreen repeatedly."""
@@ -226,12 +238,13 @@ def self_install_if_needed():
     try:
         current_exe = os.path.abspath(sys.executable)
         installed_exe = os.path.abspath(get_installed_exe_path())
+        current_dir = os.path.dirname(current_exe)
+        installed_dir = os.path.dirname(installed_exe)
 
         if current_exe.lower() == installed_exe.lower():
             return False
 
-        os.makedirs(os.path.dirname(installed_exe), exist_ok=True)
-        shutil.copy2(current_exe, installed_exe)
+        copy_tree_contents(current_dir, installed_dir)
         apply_startup_registration(True)
 
         try:
@@ -1199,16 +1212,17 @@ def run_tray():
 def run_update(download_url):
     try:
         temp_dir = tempfile.gettempdir()
-        new_exe_path = os.path.join(temp_dir, "FocusAudio_update.exe")
         new_zip_path = os.path.join(temp_dir, "FocusAudio_update.zip")
 
         log.debug("Downloading update...")
         if download_url.lower().endswith(".zip"):
             urllib.request.urlretrieve(download_url, new_zip_path)
         else:
-            urllib.request.urlretrieve(download_url, new_exe_path)
+            return
 
         current_exe = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
+        installed_exe = get_installed_exe_path()
+        installed_dir = os.path.dirname(installed_exe)
 
         if not getattr(sys, 'frozen', False):
             log.info("Not running as compiled exe, skipping auto-update overwrite.")
@@ -1236,14 +1250,21 @@ def run_update(download_url):
             # Prefer a FocusAudio exe if present, otherwise take the first exe.
             preferred = [p for p in exe_candidates if os.path.basename(p).lower().startswith("focusaudio")]
             selected_exe = preferred[0] if preferred else exe_candidates[0]
-            shutil.copy2(selected_exe, new_exe_path)
+            update_payload_dir = os.path.dirname(selected_exe)
+
+            # If the release contains a whole app folder, copy the folder contents.
+            # This keeps DLLs and sidecar files together and avoids temp extraction issues.
+            if update_payload_dir:
+                copy_tree_contents(update_payload_dir, installed_dir)
+
+            if os.path.abspath(selected_exe).lower() != os.path.abspath(installed_exe).lower():
+                shutil.copy2(selected_exe, installed_exe)
 
         bat_path = os.path.join(temp_dir, "update_focusaudio.bat")
 
         bat_content = f"""@echo off
 timeout /t 2 /nobreak > NUL
-move /y "{new_exe_path}" "{current_exe}"
-start "" "{current_exe}"
+start "" "{installed_exe}"
 del "%~f0"
 """
         with open(bat_path, "w") as f:
